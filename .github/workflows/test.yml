@@ -1,0 +1,45 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Report the fixture's fixes without opening a pull request
+        type: boolean
+        default: true
+
+permissions: {}
+
+jobs:
+  fixture:
+    name: Bun security fixes
+    permissions:
+      contents: read
+      pull-requests: read
+    # actionlint doesn't accept the $/ self-repository form yet; nothing is checked out before this call
+    uses: ./.github/workflows/bun-security-fixes.yml # zizmor: ignore[self-repository]
+    with:
+      working-directory: test/fixture
+      audit-level: critical
+      dry-run: ${{ github.event_name != 'workflow_dispatch' || inputs.dry-run }}
+      app-client-id: ${{ vars.DEPENDENCY_UPDATES_APP_CLIENT_ID }}
+    secrets:
+      app-private-key: ${{ secrets.DEPENDENCY_UPDATES_APP_PRIVATE_KEY }}
+
+  verify:
+    name: Fixture was fixed
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: The fixture's lodash advisory changed bun.lock
+        env:
+          CHANGED: ${{ needs.fixture.outputs.changed-files }}
+        run: |
+          echo "Changed: $CHANGED"
+          [[ " $CHANGED " == *" test/fixture/bun.lock "* ]]

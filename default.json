@@ -1,0 +1,126 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Update rules every public visorian repository extends. The extends list is config:recommended without mergeConfidence:age-confidence-badges, whose PR badges load package names and versions from developer.mend.io",
+  "extends": [
+    ":dependencyDashboard",
+    ":semanticPrefixFixDepsChoreOthers",
+    ":ignoreModulesAndTests",
+    "group:monorepos",
+    "group:recommended",
+    "replacements:all",
+    "workarounds:all",
+    "security:php2shell",
+    "helpers:forgejoDigestChangelogs",
+    "helpers:giteaDigestChangelogs",
+    "helpers:githubDigestChangelogs",
+    "helpers:gitlabDigestChangelogs",
+    "helpers:goXPackagesChangelogLink",
+    "helpers:goXPackagesNameLink",
+    "helpers:renovateChangelog",
+    "schedule:weekly",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommits"
+  ],
+  "minimumReleaseAge": "7 days",
+  "separateMajorMinor": false,
+  "semanticCommitScope": "deps",
+  "lockFileMaintenance": {
+    "description": "Bun's own minimumReleaseAge holds the regenerated lockfile to 7 days; Renovate can't date it",
+    "enabled": true,
+    "minimumReleaseAge": null
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Bun version defaults in Dockerfiles, which follow packageManager",
+      "managerFilePatterns": ["/(^|/)[^/]*(Dockerfile|Containerfile)[^/]*$/"],
+      "matchStrings": ["ARG BUN_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "bun",
+      "datasourceTemplate": "repology",
+      "packageNameTemplate": "nix_unstable/bun",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "The bun manager reads no locked versions, so only a range bump surfaces in-range updates",
+      "matchManagers": ["bun"],
+      "rangeStrategy": "bump",
+      "separateMajorMinor": true,
+      "semanticCommitType": "build"
+    },
+    {
+      "matchManagers": ["bun"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "bun dependencies"
+    },
+    {
+      "description": "Majors need migration work, so each waits for approval on the Dependency Dashboard",
+      "matchManagers": ["bun"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Bun follows the release nixpkgs-unstable ships",
+      "matchManagers": ["bun"],
+      "matchDepNames": ["bun"],
+      "matchDepTypes": ["packageManager", "engines"],
+      "overrideDatasource": "repology",
+      "overridePackageName": "nix_unstable/bun",
+      "rangeStrategy": "replace"
+    },
+    {
+      "description": "Repology has no release dates, so nixpkgs packaging is the delay instead of the release age",
+      "matchDepNames": ["bun"],
+      "matchManagers": ["bun", "custom.regex"],
+      "groupName": "bun runtime",
+      "minimumReleaseAge": null,
+      "separateMajorMinor": false,
+      "dependencyDashboardApproval": false
+    },
+    {
+      "description": "Bun base images take their tag from ARG BUN_VERSION, which follows packageManager above",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "matchPackageNames": ["oven/bun"],
+      "enabled": false
+    },
+    {
+      "description": "Drizzle publishes commit snapshots such as 1.0.0-rc.5-ab785fc; allow only releases and numbered release candidates",
+      "matchManagers": ["bun"],
+      "matchPackageNames": ["drizzle-orm", "drizzle-kit"],
+      "groupName": "drizzle dependencies",
+      "allowedVersions": "/^\\d+\\.\\d+\\.\\d+(-rc\\.\\d+)?$/"
+    },
+    {
+      "description": "Our own packages skip the release age, so a code-standards release reaches consumers right away",
+      "matchPackageNames": ["@visorian/**"],
+      "minimumReleaseAge": null
+    },
+    {
+      "matchManagers": ["github-actions", "dockerfile", "docker-compose"],
+      "groupName": "workflow and image pins",
+      "semanticCommitType": "ci"
+    },
+    {
+      "description": "Callers pin the shared workflows by commit; Renovate moves the pin to the newest commit on main, which carries no release date",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["visorian/public-workflows"],
+      "minimumReleaseAge": null
+    },
+    {
+      "description": "Git refs and runner labels carry no release dates and would otherwise wait forever",
+      "matchDatasources": ["git-refs", "github-runners"],
+      "minimumReleaseAge": null
+    },
+    {
+      "description": "Pinning a digest adds no new code",
+      "matchUpdateTypes": ["pinDigest"],
+      "minimumReleaseAge": null
+    },
+    {
+      "description": "Registries such as gcr.io publish no release dates; age images where a date exists",
+      "matchDatasources": ["docker"],
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "bun-security-fixes-fixture",
+  "private": true,
+  "packageManager": "bun@1.4.4",
+  "dependencies": {
+    "lodash": "^4.17.20"
+  }
+}

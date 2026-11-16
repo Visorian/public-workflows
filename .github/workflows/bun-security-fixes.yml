@@ -1,0 +1,281 @@
+name: Bun security fixes
+
+# Applies `bun audit fix` to the default branch and keeps one pull request with the result.
+# The audit job runs bun without any secret. Only the pull request job holds the App token,
+# and it runs no repository code: it commits the audited files through the API, which signs the commit.
+
+on:
+  workflow_call:
+    inputs:
+      app-client-id:
+        description: Client ID of the GitHub App that opens the pull request, so its checks run
+        type: string
+        default: ""
+      audit-level:
+        description: Lowest severity of a remaining advisory that fails the run
+        type: string
+        default: high
+      dry-run:
+        description: Report the fixes without opening a pull request
+        type: boolean
+        default: false
+      runs-on:
+        description: Runner label for both jobs
+        type: string
+        default: ubuntu-slim
+      working-directory:
+        description: Directory that holds package.json and bun.lock
+        type: string
+        default: .
+    secrets:
+      app-private-key:
+        description: Private key of that GitHub App
+        required: false
+    outputs:
+      action:
+        description: What the run did with the pull request, update, close or none
+        value: ${{ jobs.audit.outputs.action }}
+      changed-files:
+        description: Files the fixes changed, separated by spaces
+        value: ${{ jobs.audit.outputs.changed-files }}
+
+permissions: {}
+
+env:
+  BRANCH: security-fixes/bun
+  MARKER: "Bun-Security-Fixes: true"
+
+jobs:
+  audit:
+    name: Audit
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+      base-sha: ${{ steps.plan.outputs.base-sha }}
+      changed-files: ${{ steps.fix.outputs.changed-files }}
+      default-branch: ${{ steps.plan.outputs.default-branch }}
+      pull-request: ${{ steps.plan.outputs.pull-request }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: ${{ inputs.working-directory }}/package.json
+
+      - name: Apply fixes inside the declared ranges
+        id: fix
+        run: |
+          set -euo pipefail
+          # Changes only bun.lock and exact pins in package.json. Nothing is installed and no
+          # dependency script runs. A fixed version skips bunfig's minimumReleaseAge; a fresh
+          # dependency it newly needs doesn't, and then the fix waits.
+          status=0
+          bun audit fix --lockfile-only --ignore-scripts >"$RUNNER_TEMP/fix.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/fix.log"
+          echo "bun audit fix exited with $status; it exits 1 while advisories remain"
+          changed="$(git diff --name-only | tr '\n' ' ' | sed 's/ $//')"
+          echo "changed-files=$changed" >>"$GITHUB_OUTPUT"
+          {
+            echo '### bun audit fix'
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/fix.log"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Decide on the pull request
+        id: plan
+        working-directory: ${{ github.workspace }}
+        env:
+          CHANGED: ${{ steps.fix.outputs.changed-files }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)"
+          base_sha="$(git rev-parse HEAD)"
+          pull_request="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          action=none
+
+          if [[ "$DRY_RUN" == true || "$GITHUB_REF" != "refs/heads/$default_branch" ]]; then
+            echo "Dry run, or not on $default_branch: no pull request"
+            git diff --stat
+          elif [[ -n "$CHANGED" || -n "$pull_request" ]]; then
+            [[ -n "$CHANGED" ]] && action=update || action=close
+            if compare="$(gh api "repos/$GITHUB_REPOSITORY/compare/$base_sha...$BRANCH" 2>/dev/null)"; then
+              ours="$(jq --arg marker "$MARKER" '[.commits[] | select(.commit.message | contains($marker))] | length' <<<"$compare")"
+              total="$(jq '.commits | length' <<<"$compare")"
+              behind="$(jq '.behind_by' <<<"$compare")"
+              # The branch is current when it holds only our commit on this base with the same contents.
+              wanted="$(for f in $CHANGED; do
+                if [[ -f "$f" ]]; then printf '%s %s\n' "$f" "$(git hash-object "$f")"; else printf '%s removed\n' "$f"; fi
+              done | sort)"
+              present="$(jq -r '.files[] | "\(.filename) \(if .status == "removed" then "removed" else .sha end)"' <<<"$compare" | sort)"
+              if ((total > ours)); then
+                # Someone pushed to the branch, for example a minimumReleaseAgeExcludes entry.
+                action=none
+                echo "::notice::$BRANCH has commits from someone else, so this run leaves it alone"
+              elif [[ "$action" == update ]] && ((behind == 0)) && [[ "$wanted" == "$present" ]]; then
+                action=none
+                echo "$BRANCH already holds these fixes on $base_sha"
+              fi
+            fi
+          fi
+
+          {
+            echo "action=$action"
+            echo "base-sha=$base_sha"
+            echo "default-branch=$default_branch"
+            echo "pull-request=$pull_request"
+          } >>"$GITHUB_OUTPUT"
+          echo "Pull request action: $action"
+
+      - name: Collect the fixed files
+        if: steps.plan.outputs.action == 'update'
+        working-directory: ${{ github.workspace }}
+        env:
+          CHANGED: ${{ steps.fix.outputs.changed-files }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/security-fixes"
+          existing=()
+          for f in $CHANGED; do [[ -f "$f" ]] && existing+=("$f"); done
+          tar -cf "$RUNNER_TEMP/security-fixes/files.tar" -- "${existing[@]}"
+          cp "$RUNNER_TEMP/fix.log" "$RUNNER_TEMP/security-fixes/fix.log"
+
+      - if: steps.plan.outputs.action == 'update'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bun-security-fixes
+          path: ${{ runner.temp }}/security-fixes
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Fail on advisories without a fix
+        env:
+          AUDIT_LEVEL: ${{ inputs.audit-level }}
+        run: bun audit --audit-level="$AUDIT_LEVEL"
+
+  pull-request:
+    name: Pull request
+    needs: audit
+    if: ${{ !cancelled() && (needs.audit.outputs.action == 'update' || needs.audit.outputs.action == 'close') }}
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 10
+    permissions: {}
+    concurrency:
+      group: bun-security-fixes-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - if: needs.audit.outputs.action == 'update'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bun-security-fixes
+          path: ${{ runner.temp }}/security-fixes
+
+      - name: Commit the fixes and open or update the pull request
+        if: needs.audit.outputs.action == 'update'
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.audit.outputs.base-sha }}
+          CHANGED: ${{ needs.audit.outputs.changed-files }}
+          DEFAULT_BRANCH: ${{ needs.audit.outputs.default-branch }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PULL_REQUEST: ${{ needs.audit.outputs.pull-request }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/security-fixes"
+          mkdir -p "$work/files"
+          tar -xf "$work/files.tar" -C "$work/files"
+          title='build(deps): apply bun audit fixes'
+
+          # Start the branch from the audited base, then add one commit through the API.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" -f sha="$BASE_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$BASE_SHA" >/dev/null
+          fi
+
+          echo '[]' >"$work/additions.json"
+          echo '[]' >"$work/deletions.json"
+          for f in $CHANGED; do
+            if [[ -f "$work/files/$f" ]]; then
+              base64 -w0 "$work/files/$f" >"$work/content.b64"
+              jq --arg path "$f" --rawfile contents "$work/content.b64" '. + [{path: $path, contents: $contents}]' \
+                "$work/additions.json" >"$work/next.json"
+              mv "$work/next.json" "$work/additions.json"
+            else
+              jq --arg path "$f" '. + [{path: $path}]' "$work/deletions.json" >"$work/next.json"
+              mv "$work/next.json" "$work/deletions.json"
+            fi
+          done
+
+          jq -n \
+            --arg query 'mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }' \
+            --arg repository "$GITHUB_REPOSITORY" --arg branch "$BRANCH" --arg head "$BASE_SHA" \
+            --arg headline "$title" --arg body "$MARKER" \
+            --slurpfile additions "$work/additions.json" --slurpfile deletions "$work/deletions.json" \
+            '{query: $query, variables: {input: {
+              branch: {repositoryNameWithOwner: $repository, branchName: $branch},
+              expectedHeadOid: $head,
+              message: {headline: $headline, body: $body},
+              fileChanges: {additions: $additions[0], deletions: $deletions[0]}
+            }}}' >"$work/request.json"
+          gh api graphql --input "$work/request.json" --jq '.data.createCommitOnBranch.commit.oid'
+
+          {
+            echo "\`bun audit fix\` changed these files on \`$DEFAULT_BRANCH\` at ${BASE_SHA:0:12}:"
+            echo
+            for f in $CHANGED; do echo "- \`$f\`"; done
+            echo
+            cat <<'EOF'
+          Fixed versions skip the 7-day minimum release age in `bunfig.toml`. Advisories listed under "blocked by a dependent's range" need an update of the package that depends on them.
+
+          The scheduled run rebuilds this pull request on the latest default branch and closes it once nothing is left to fix. It leaves the branch alone after anyone else pushes to it.
+          EOF
+            echo
+            echo '<details><summary>bun audit fix output</summary>'
+            echo
+            echo '```text'
+            cat "$work/fix.log"
+            echo '```'
+            echo
+            echo '</details>'
+          } >"$work/body.md"
+
+          if [[ -n "$PULL_REQUEST" ]]; then
+            gh pr edit "$PULL_REQUEST" --repo "$GITHUB_REPOSITORY" --body-file "$work/body.md"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base "$DEFAULT_BRANCH" --head "$BRANCH" \
+              --title "$title" --body-file "$work/body.md"
+          fi
+
+      - name: Close the pull request
+        if: needs.audit.outputs.action == 'close'
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.audit.outputs.base-sha }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PULL_REQUEST: ${{ needs.audit.outputs.pull-request }}
+        run: |
+          set -euo pipefail
+          gh pr close "$PULL_REQUEST" --repo "$GITHUB_REPOSITORY" --delete-branch \
+            --comment "bun audit fix finds nothing left to fix at ${BASE_SHA:0:12}."
