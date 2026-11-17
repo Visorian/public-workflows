@@ -121,8 +121,9 @@ jobs:
                 if [[ -f "$f" ]]; then printf '%s %s\n' "$f" "$(git hash-object "$f")"; else printf '%s removed\n' "$f"; fi
               done | sort)"
               present="$(jq -r '.files[] | "\(.filename) \(if .status == "removed" then "removed" else .sha end)"' <<<"$compare" | sort)"
-              if ((total > ours)); then
-                # Someone pushed to the branch, for example a minimumReleaseAgeExcludes entry.
+              if [[ -n "$pull_request" ]] && ((total > ours)); then
+                # Someone pushed to the open pull request, for example a minimumReleaseAgeExcludes entry.
+                # Without an open pull request the branch is left over from a merged or closed one and gets rebuilt.
                 action=none
                 echo "::notice::$BRANCH has commits from someone else, so this run leaves it alone"
               elif [[ "$action" == update ]] && ((behind == 0)) && [[ "$wanted" == "$present" ]]; then
@@ -249,7 +250,7 @@ jobs:
             cat <<'EOF'
           Fixed versions skip the 7-day minimum release age in `bunfig.toml`. Advisories listed under "blocked by a dependent's range" need an update of the package that depends on them.
 
-          The scheduled run rebuilds this pull request on the latest default branch and closes it once nothing is left to fix. It leaves the branch alone after anyone else pushes to it.
+          The scheduled run rebuilds this pull request on the latest default branch and closes it once nothing is left to fix. It leaves the branch alone after anyone else pushes to it while this pull request is open.
           EOF
             echo
             echo '<details><summary>bun audit fix output</summary>'
