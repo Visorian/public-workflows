@@ -92,9 +92,10 @@
       "allowedVersions": "/^\\d+\\.\\d+\\.\\d+(-rc\\.\\d+)?$/"
     },
     {
-      "description": "Our own packages skip the release age, so a code-standards release reaches consumers right away",
+      "description": "Our own packages skip the release age and the weekly schedule, so a code-standards release reaches consumers at the next Renovate run; consumers also list them in bunfig's minimumReleaseAgeExcludes",
       "matchPackageNames": ["@visorian/**"],
-      "minimumReleaseAge": null
+      "minimumReleaseAge": null,
+      "schedule": ["at any time"]
     },
     {
       "matchManagers": ["github-actions", "dockerfile", "docker-compose"],
