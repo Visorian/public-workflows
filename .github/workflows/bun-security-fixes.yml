@@ -208,39 +208,38 @@ jobs:
           tar -xf "$work/files.tar" -C "$work/files"
           title='build(deps): apply bun audit fixes'
 
-          # Start the branch from the audited base, then add one commit through the API.
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" -f sha="$BASE_SHA" -F force=true >/dev/null
-          else
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$BASE_SHA" >/dev/null
-          fi
-
-          echo '[]' >"$work/additions.json"
-          echo '[]' >"$work/deletions.json"
+          # Build one commit on the audited base through the REST API, which signs it because it names no
+          # author or committer, then move the branch onto it. Pointing the branch at the base first would
+          # leave the pull request without commits, and GitHub closes it.
+          echo '[]' >"$work/tree.json"
           for f in $CHANGED; do
             if [[ -f "$work/files/$f" ]]; then
               base64 -w0 "$work/files/$f" >"$work/content.b64"
-              jq --arg path "$f" --rawfile contents "$work/content.b64" '. + [{path: $path, contents: $contents}]' \
-                "$work/additions.json" >"$work/next.json"
-              mv "$work/next.json" "$work/additions.json"
+              blob="$(jq -n --rawfile content "$work/content.b64" '{content: $content, encoding: "base64"}' |
+                gh api --method POST "repos/$GITHUB_REPOSITORY/git/blobs" --input - --jq .sha)"
+              jq --arg path "$f" --arg sha "$blob" '. + [{path: $path, mode: "100644", type: "blob", sha: $sha}]' \
+                "$work/tree.json" >"$work/next.json"
             else
-              jq --arg path "$f" '. + [{path: $path}]' "$work/deletions.json" >"$work/next.json"
-              mv "$work/next.json" "$work/deletions.json"
+              jq --arg path "$f" '. + [{path: $path, mode: "100644", type: "blob", sha: null}]' \
+                "$work/tree.json" >"$work/next.json"
             fi
+            mv "$work/next.json" "$work/tree.json"
           done
 
-          jq -n \
-            --arg query 'mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }' \
-            --arg repository "$GITHUB_REPOSITORY" --arg branch "$BRANCH" --arg head "$BASE_SHA" \
-            --arg headline "$title" --arg body "$MARKER" \
-            --slurpfile additions "$work/additions.json" --slurpfile deletions "$work/deletions.json" \
-            '{query: $query, variables: {input: {
-              branch: {repositoryNameWithOwner: $repository, branchName: $branch},
-              expectedHeadOid: $head,
-              message: {headline: $headline, body: $body},
-              fileChanges: {additions: $additions[0], deletions: $deletions[0]}
-            }}}' >"$work/request.json"
-          gh api graphql --input "$work/request.json" --jq '.data.createCommitOnBranch.commit.oid'
+          base_tree="$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$BASE_SHA" --jq .tree.sha)"
+          tree="$(jq -n --arg base "$base_tree" --slurpfile entries "$work/tree.json" \
+            '{base_tree: $base, tree: $entries[0]}' |
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/trees" --input - --jq .sha)"
+          commit="$(jq -n --arg title "$title" --arg marker "$MARKER" --arg tree "$tree" --arg parent "$BASE_SHA" \
+            '{message: "\($title)\n\n\($marker)", tree: $tree, parents: [$parent]}' |
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/commits" --input - --jq .sha)"
+          echo "$commit"
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" -f sha="$commit" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$commit" >/dev/null
+          fi
 
           {
             echo "\`bun audit fix\` changed these files on \`$DEFAULT_BRANCH\` at ${BASE_SHA:0:12}:"
