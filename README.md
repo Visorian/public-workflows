@@ -36,7 +36,7 @@ A fresh security fix that Renovate proposes then fails to install. Add its exact
 
 - Fixed versions skip the 7-day `minimumReleaseAge` in the caller's `bunfig.toml`. A fresh package that a fix newly needs doesn't, so the run fails and its log names that package. Add its exact `name@version` to `minimumReleaseAgeExcludes`.
 - The workflow applies only fixes inside the declared ranges, plus bumps of exact pins in `package.json`. An advisory "blocked by a dependent's range" needs an update of its parent package, which Renovate proposes.
-- Each run rebuilds the pull request on the latest default branch and closes it once nothing is left to fix. After anyone else pushes to the branch, the workflow leaves it alone.
+- Each run rebuilds the pull request on the latest default branch and closes it once nothing is left to fix. While the pull request is open, the workflow leaves the branch alone after anyone else pushes to it. A branch left over from a merged or closed pull request gets rebuilt.
 - The run fails while an advisory at or above `audit-level` has no fix.
 - The audit job runs bun without any secret. Only the pull request job holds the App token, and it executes no repository code. It commits through the API, so GitHub signs the commit.
 - Both jobs take about 10 seconds and run on the 1-core `ubuntu-slim` runner.
