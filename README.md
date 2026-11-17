@@ -18,7 +18,7 @@ A public repository's `renovate.json` extends [`default.json`](default.json) and
 - Bun follows the release nixpkgs-unstable ships, looked up through Repology. `packageManager`, an exact `engines.bun` and `ARG BUN_VERSION=` in Dockerfiles move together in one pull request, and a Dockerfile takes its `oven/bun` tag from that argument. Repology has no release dates, so nixpkgs packaging is the delay instead of the release age.
 - GitHub Actions are pinned by digest, and actions and images share one pull request. That includes the callers' pin of the bun security fixes workflow below.
 - Pull request bodies carry no Mend merge confidence badges. Their image URLs would send package names and versions to developer.mend.io, so the preset lists `config:recommended`'s parts without that one.
-- `@visorian/*` packages skip the release age.
+- `@visorian/*` packages skip the release age and the weekly schedule, so a new code-standards release arrives at the next Renovate run. Each consuming repository also lists them in `minimumReleaseAgeExcludes` in `bunfig.toml`, or bun refuses to install the fresh version.
 
 Each bun repository also needs a `bunfig.toml` with the same 7 days, because Renovate's release age only covers the versions it proposes, not what bun resolves around them or what someone installs by hand:
 
